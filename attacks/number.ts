@@ -1,0 +1,30 @@
+import type { Attack } from "../assertions";
+
+// Static attack catalog for number-typed fields (and numeric query values,
+// which travel as strings — the query file reuses these via String()).
+export const NUMBER_ATTACKS: Attack[] = [
+  { label: "zero", value: 0, tags: ["boundary"] },
+  { label: "neg-zero", value: -0, tags: ["boundary"] },
+  { label: "neg-one", value: -1, tags: ["boundary"] },
+  { label: "neg-huge", value: -999999999, tags: ["boundary"] },
+  { label: "float", value: 1.5, tags: ["type"] },
+  { label: "thousand-exp", value: 1e3, tags: ["shape"] },
+  { label: "infinity", value: 1e309, tags: ["boundary"] },
+  { label: "max-safe", value: Number.MAX_SAFE_INTEGER, tags: ["boundary"] },
+  { label: "max-safe-plus-1", value: Number.MAX_SAFE_INTEGER + 1, tags: ["boundary"] },
+  { label: "min-safe", value: Number.MIN_SAFE_INTEGER, tags: ["boundary"] },
+  { label: "int32-max", value: 2147483647, tags: ["boundary"] },
+  { label: "int32-max-plus-1", value: 2147483648, tags: ["boundary"] },
+  { label: "numeric-string", value: "5", tags: ["confusable"] },
+  { label: "padded-string", value: "05", tags: ["confusable"] },
+  { label: "spaced-string", value: " 5 ", tags: ["confusable"] },
+  { label: "hex-string", value: "0x10", tags: ["confusable"] },
+  { label: "exp-string", value: "1e3", tags: ["confusable"] },
+  { label: "bool-true", value: true, tags: ["type"] },
+  { label: "bool-false", value: false, tags: ["type"] },
+  { label: "null", value: null, tags: ["type"] },
+  { label: "array", value: [1], tags: ["type"] },
+  { label: "object", value: { n: 1 }, tags: ["type"] },
+  { label: "empty-string", value: "", tags: ["boundary"] },
+  { label: "letters", value: "abc", tags: ["type"] },
+];
