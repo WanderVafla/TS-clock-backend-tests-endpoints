@@ -9,10 +9,9 @@
 //  D3. Project response data: ProjectSchema is NOT exported by the app, so the
 //      registry declares a minimal project shape. If the app exports it later,
 //      switch the import and delete the declaration.
-//  D4. DELETE /projects success data is the FULL project shape because the
-//      declared type is Promise<Project> (owner decision 3.2). The handler
-//      currently returns {id} only, so this case is EXPECTED to fail and the
-//      divergence goes to REPORT.md.
+//  D4. DELETE /projects success data is `{id}` (owner decision (b),
+ //      2026-10-06): the handler runs `delete ... returning id` and the
+//      declared type is `Promise<{id: number}>`, so the contract is `{id}`.
 //  D5. GET /entiers query object: the route builds
 //      v.object({ id: optional(idQuerySchema), project_id: optional(idQuerySchema) })
 //      inline. Mirrored with the imported idQuerySchema (same constraint).
@@ -267,7 +266,7 @@ export const REGISTRY: RegistryEntry[] = [
     method: "DELETE",
     path: "/projects",
     querySchema: v.object({ id: idQuerySchema }), // D2
-    responseData: projectData, // D4: declared Promise<Project>
+    responseData: idOnlyData, // D4: contract is `{id}` (owner decision (b))
     listData: v.array(projectData), // D3
     makeValidBody: (tag) => validName("projects", tag),
     tracked: [],
