@@ -779,42 +779,23 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
     });
   }
 
-  // 4. Guaranteed-missing id.
-  // Row mode (DELETE by id): exact 404 (HTTP semantics + app taxonomy).
-  // Filter mode (GET list): the id is schema-valid, so the oracle forbids
-  // expecting 4xx — a filter returns 2xx with a list (T13). The strict
-  // "GET detail must 404" reading of issue #6 stays covered by the semantic
-  // suite (REPORT F3), which asserts the contract instead of the oracle.
   } // end if (primary key)
   } // end per-key loop
+
+  // 4. Guaranteed-missing id: exact 404 in both modes.
+  // Row mode (DELETE by id): HTTP semantics + app taxonomy.
+  // Filter mode (GET list): owner decision (b), 2026-10-06 (T14) — an
+  // `/entiers` filter matching nothing is a 404 ("Not-found cases return
+  // 404", issue #6), not a `200 []`. Supersedes the T13 2xx-list reading;
+  // the semantic suite (REPORT F3) asserts the same contract.
   {
     const key = keys[0];
     const meta = { endpoint: entry.key, method: entry.method, path: entry.path, field: key, attack: "missing-id" };
-    if (entry.queryMode === "filter") {
-      cases.push({
-        name: `[${entry.key} query.${key}] missing-id`,
-        meta,
-        run: async () => {
-          const base = { ...meta, path: `${entry.path}?${key}=${MISSING_ID}`, sentBody: undefined as string | undefined, expected: "2xx list (filter finds nothing)" };
-          const r = await send(entry.method, `${entry.path}?${key}=${MISSING_ID}`);
-          try {
-            if (r.status < 200 || r.status >= 300) {
-              throw new Error(`expected 2xx, got ${r.status}`);
-            }
-            checkSuccessResponse(base, { ...entry, responseData: entry.listData }, r);
-          } catch (e) {
-            fail({ ...base, status: r.status, bodyText: r.text.slice(0, 500) }, String((e as Error).message));
-          }
-          ok(base, r.status, r.text);
-        },
-      });
-    } else {
-      cases.push({
-        name: `[${entry.key} query.${key}] missing-id`,
-        meta,
-        run: () => routeQueryOutcome(meta, `${key}=${MISSING_ID}`, "exact404"),
-      });
-    }
+    cases.push({
+      name: `[${entry.key} query.${key}] missing-id`,
+      meta,
+      run: () => routeQueryOutcome(meta, `${key}=${MISSING_ID}`, "exact404"),
+    });
   }
   return cases;
 }
