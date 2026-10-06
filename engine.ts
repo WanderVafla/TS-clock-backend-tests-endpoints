@@ -303,6 +303,20 @@ function checkSuccessResponse(
 
 // ── Fixtures ──
 
+// Valid request base for attack cases. PATCH entries (needsFixture) must
+// satisfy the UPDATE schema (id + patch fields), not the create shape, so a
+// dedicated patch factory wins when present. Entries without it behave
+// exactly as before.
+export function validBaseOf(
+  entry: RegistryEntry,
+  tag: string,
+): Record<string, unknown> {
+  if (!entry.makeValidBody) throw new Error(`no body factory for ${entry.key}`);
+  return entry.needsFixture && entry.makeValidPatchBody
+    ? entry.makeValidPatchBody(tag)
+    : entry.makeValidBody(tag, entry);
+}
+
 export async function preflight(): Promise<void> {
   console.log(`contract-test seed=${SEED} base=${BASE}`);
   let r: Resp;
@@ -316,7 +330,7 @@ export async function preflight(): Promise<void> {
 
 export async function setupEntry(entry: RegistryEntry): Promise<void> {
   if (!entry.makeValidBody) return;
-  const body = entry.makeValidBody("fixture");
+  const body = entry.makeValidBody("fixture", entry);
   const r = await send("POST", entry.path, body);
   if (r.status < 200 || r.status >= 300) {
     throw new Error(`setup failed for ${entry.key}: POST ${entry.path} -> ${r.status} ${r.text.slice(0, 200)}`);
@@ -376,7 +390,7 @@ function bodyCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[]
         name: `[${entry.key} body.${field}] ${a.label}`,
         meta,
         run: async () => {
-          const valid = entry.makeValidBody!("case");
+          const valid = validBaseOf(entry, "case");
           if (entry.needsFixture && entry.fixtureId !== undefined && field === "id") {
             valid["id"] = entry.fixtureId;
           } else if (entry.needsFixture && entry.fixtureId !== undefined && valid["id"] === undefined) {
@@ -428,7 +442,7 @@ function bodyCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[]
       name: `[${entry.key} body.${field}] MISSING-KEY`,
       meta: missingMeta,
       run: async () => {
-        const valid = entry.makeValidBody!("case");
+        const valid = validBaseOf(entry, "case");
         if (entry.needsFixture && entry.fixtureId !== undefined && valid["id"] === undefined) {
           valid["id"] = entry.fixtureId;
         }
@@ -503,7 +517,7 @@ function objectLevelCases(entry: RegistryEntry, schema: v.GenericSchema): Planne
       name: `[${entry.key} body] ${variant.label}`,
       meta: objMeta,
       run: async () => {
-        const valid = entry.makeValidBody!("case");
+        const valid = validBaseOf(entry, "case");
         if (entry.needsFixture && entry.fixtureId !== undefined && valid["id"] === undefined) {
           valid["id"] = entry.fixtureId;
         }
@@ -613,7 +627,7 @@ function rawBodyCases(entry: RegistryEntry): PlannedCase[] {
 
 async function freshFixtureId(entry: RegistryEntry, tag: string): Promise<number> {
   if (!entry.makeValidBody) throw new Error(`no body factory for ${entry.key}`);
-  const body = entry.makeValidBody(tag);
+  const body = entry.makeValidBody(tag, entry);
   const r = await send("POST", entry.path, body);
   if (r.status < 200 || r.status >= 300) {
     throw new Error(`fixture POST ${entry.path} -> ${r.status} ${r.text.slice(0, 200)}`);
@@ -658,7 +672,6 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
   const qentries = nodeOf(schema).entries ?? {};
   const keys = Object.keys(qentries);
   if (keys.length === 0) return cases;
-  const key = keys[0];
   const enc = encodeURIComponent;
 
   const routeQueryOutcome = async (
@@ -701,6 +714,10 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
   };
 
   // 1. Values that can never resolve -> strict 4xx (oracle via safeParse guard).
+  // Runs for EVERY query key: rejecting an invalid filter is in-contract for
+  // each of them. Resolving/form cases (§2-3) run for the primary key only;
+  // resolving filters on secondary keys are covered by semantic round-trips.
+  for (const key of keys) {
   for (const s of SAFE_QUERY_STRINGS) {
     const parsed = v.safeParse(schema, { [key]: s });
     if (parsed.success) continue; // safety: never assert 4xx on schema-valid input
@@ -714,6 +731,8 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
   }
 
   // 2. Fixture-derived parsing variants, each with its OWN fresh row.
+  // Primary key only (a fresh row id is meaningful only for the id filter).
+  if (key === keys[0]) {
   const FORM_LABELS = ["plain", "leading-zero", "padded-spaces", "hex", "trailing-dot-zero", "plus-sign"] as const;
   for (const label of FORM_LABELS) {
     const meta = { endpoint: entry.key, method: entry.method, path: entry.path, field: key, attack: `form:${label}` };
@@ -736,7 +755,10 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
   }
 
   // 3. Exotic syntax: resolving ones get a fresh owned row + weakest routing;
-  //    non-resolving ones use a dummy base and expect strict 4xx.
+  //    non-resolving ones use a guaranteed-missing base and expect strict 4xx
+  //    (row mode) or weakest routing (filter mode, T13). The base is MISSING_ID,
+  //    never a small literal: a previous run deleted pre-existing row id 7
+  //    because double-encoding resolves server-side (T11, REPORT incident 2).
   for (const q of QUERY_ATTACKS) {
     const meta = { endpoint: entry.key, method: entry.method, path: entry.path, field: key, attack: `syntax:${q.label}` };
     cases.push({
@@ -747,20 +769,52 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
           const f = await freshFixtureId(entry, `qsyn-${q.label}`);
           await routeQueryOutcome(meta, q.apply(key, String(f)), "weak");
         } else {
-          await routeQueryOutcome(meta, q.apply(key, "7"), "strict4xx");
+          await routeQueryOutcome(
+            meta,
+            q.apply(key, String(MISSING_ID)),
+            entry.queryMode === "filter" ? "weak" : "strict4xx",
+          );
         }
       },
     });
   }
 
-  // 4. Guaranteed-missing id -> exact 404 (HTTP semantics + app taxonomy).
+  // 4. Guaranteed-missing id.
+  // Row mode (DELETE by id): exact 404 (HTTP semantics + app taxonomy).
+  // Filter mode (GET list): the id is schema-valid, so the oracle forbids
+  // expecting 4xx — a filter returns 2xx with a list (T13). The strict
+  // "GET detail must 404" reading of issue #6 stays covered by the semantic
+  // suite (REPORT F3), which asserts the contract instead of the oracle.
+  } // end if (primary key)
+  } // end per-key loop
   {
+    const key = keys[0];
     const meta = { endpoint: entry.key, method: entry.method, path: entry.path, field: key, attack: "missing-id" };
-    cases.push({
-      name: `[${entry.key} query.${key}] missing-id`,
-      meta,
-      run: () => routeQueryOutcome(meta, `${key}=${MISSING_ID}`, "exact404"),
-    });
+    if (entry.queryMode === "filter") {
+      cases.push({
+        name: `[${entry.key} query.${key}] missing-id`,
+        meta,
+        run: async () => {
+          const base = { ...meta, path: `${entry.path}?${key}=${MISSING_ID}`, sentBody: undefined as string | undefined, expected: "2xx list (filter finds nothing)" };
+          const r = await send(entry.method, `${entry.path}?${key}=${MISSING_ID}`);
+          try {
+            if (r.status < 200 || r.status >= 300) {
+              throw new Error(`expected 2xx, got ${r.status}`);
+            }
+            checkSuccessResponse(base, { ...entry, responseData: entry.listData }, r);
+          } catch (e) {
+            fail({ ...base, status: r.status, bodyText: r.text.slice(0, 500) }, String((e as Error).message));
+          }
+          ok(base, r.status, r.text);
+        },
+      });
+    } else {
+      cases.push({
+        name: `[${entry.key} query.${key}] missing-id`,
+        meta,
+        run: () => routeQueryOutcome(meta, `${key}=${MISSING_ID}`, "exact404"),
+      });
+    }
   }
   return cases;
 }
@@ -768,7 +822,7 @@ function queryCases(entry: RegistryEntry, schema: v.GenericSchema): PlannedCase[
 function stateCases(entry: RegistryEntry): PlannedCase[] {
   if (!entry.makeValidBody) return [];
   const mk = async (tag: string): Promise<number> => {
-    const body = entry.makeValidBody!(tag);
+    const body = entry.makeValidBody!(tag, entry);
     const r = await send("POST", entry.path, body);
     if (r.status < 200 || r.status >= 300) {
       throw new Error(`state setup failed: POST ${entry.path} -> ${r.status}`);
@@ -813,7 +867,12 @@ function stateCases(entry: RegistryEntry): PlannedCase[] {
           field: "(state)", attack: "patch-after-delete", sentBody: undefined, expected: "PATCH 4xx",
         };
         await send("DELETE", `${entry.path}?id=${id}`);
-        const body = { id, name: "contract-ghost" };
+        // PATCH-after-delete must send a schema-shaped update body. Entries
+        // with a patch factory use it; others keep the legacy {name} body.
+        const body: Record<string, unknown> = entry.makeValidPatchBody
+          ? entry.makeValidPatchBody("ghost")
+          : { name: "contract-ghost" };
+        body["id"] = id;
         const r = await send("PATCH", entry.path, body);
         try {
           expect4xx({ ...base }, r.status, r.text);
@@ -888,7 +947,7 @@ function validCases(entry: RegistryEntry): PlannedCase[] {
       name: `[${entry.key}] valid create -> 2xx envelope`,
       meta: { endpoint: entry.key, method: entry.method, path: entry.path, field: "(auto)", attack: "(auto)" },
       run: async () => {
-        const body = entry.makeValidBody!("valid");
+        const body = entry.makeValidBody!("valid", entry);
         const base = {
           endpoint: entry.key, method: entry.method, path: entry.path,
           field: "(valid)", attack: "valid-create", sentBody: JSON.stringify(body), expected: "2xx envelope",
@@ -912,7 +971,7 @@ function validCases(entry: RegistryEntry): PlannedCase[] {
         meta: { endpoint: entry.key, method: entry.method, path: entry.path, field: "(auto)", attack: "(auto)" },
         run: async () => {
           if (entry.fixtureId === undefined) throw new Error("no fixture id");
-          const body = entry.makeValidBody!("valid");
+          const body = validBaseOf(entry, "valid");
           body["id"] = idForm === "number" ? entry.fixtureId : String(entry.fixtureId);
           const base = {
             endpoint: entry.key, method: entry.method, path: entry.path,
@@ -943,7 +1002,10 @@ export function planEndpoint(entry: RegistryEntry): PlannedCase[] {
     out.push(...rawBodyCases(entry));
   }
   if (entry.querySchema) out.push(...queryCases(entry, entry.querySchema));
-  if (entry.makeValidBody) out.push(...stateCases(entry));
+  // Links have no numeric data.id and no DELETE route, so the generic
+  // POST-then-DELETE-by-id state cases cannot address them (T12). Cascade
+  // behavior is covered by the semantic suite instead.
+  if (entry.makeValidBody && !entry.stateless) out.push(...stateCases(entry));
   return out;
 }
 
