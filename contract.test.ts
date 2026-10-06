@@ -23,7 +23,11 @@ const REPORT_PATH = "/tmp/contract-report.json";
 beforeAll(async () => {
   await preflight();
   for (const entry of REGISTRY) {
-    await setupEntry(entry);
+    // Entries with cross-resource fixtures (entries need an owned project,
+    // links need project+entry+label) run their own async setup; the generic
+    // single-POST setup covers the rest.
+    if (entry.setup) await entry.setup(entry);
+    else await setupEntry(entry);
   }
 });
 
@@ -114,6 +118,25 @@ afterAll(async () => {
   }
   const results = await Promise.all(cleanups);
   console.log(`seed=${SEED} cleanup=${JSON.stringify(results)}`);
+  const teardowns = [];
+  for (const entry of REGISTRY) {
+    if (entry.teardown) {
+      teardowns.push(
+        entry
+          .teardown(entry)
+          .then(() => ({ key: entry.key, ok: true as const }))
+          .catch((e) => ({
+            key: entry.key,
+            ok: false as const,
+            error: String(e instanceof Error ? e.message : e),
+          })),
+      );
+    }
+  }
+  const teardownResults = await Promise.all(teardowns);
+  if (teardownResults.length > 0) {
+    console.log(`seed=${SEED} teardown=${JSON.stringify(teardownResults)}`);
+  }
   await writeReport(REPORT_PATH);
   console.log(`report json: ${REPORT_PATH}`);
 });

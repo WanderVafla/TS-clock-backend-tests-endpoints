@@ -85,7 +85,12 @@ const LEAK_PATTERNS: RegExp[] = [
   /violates\s+(unique|foreign key|not-null|check)/i,
   /labels_time_entrie/,
   /time_entries/,
-  /project_id|time_entry_id|label_id/,
+  // NOTE (T10): request field names (project_id, time_entry_id, label_id)
+  // are deliberately NOT matched. They are public API contract (route
+  // schemas + /openapi), and Elysia echoes the expected KEY in every
+  // VALIDATION message — flagging that would fail every 422 on entries
+  // endpoints without revealing any internals. Table names above stay:
+  // those never appear in a clean envelope.
   /created_at/,
   /relation\s+"/i,
   /PostgresError|SQLError|ERR_POSTGRES/,
